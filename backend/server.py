@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form, Depends
+from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form, Depends, BackgroundTasks
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from dotenv import load_dotenv
@@ -7,19 +7,27 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
 from pathlib import Path
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional
 import uuid
 from datetime import datetime, timezone
 import secrets
 import hashlib
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.header import Header
+from email.utils import formataddr
+import asyncio
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-# Create uploads directory
-UPLOAD_DIR = ROOT_DIR / "uploads"
-UPLOAD_DIR.mkdir(exist_ok=True)
+# Create uploads directory in frontend
+BASE_DIR = Path(__file__).resolve().parent.parent  # project root
+UPLOAD_DIR = BASE_DIR / "frontend" / "public" / "uploads"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
 
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']
@@ -42,16 +50,29 @@ ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'advaithaa2024')
 # Session tokens storage (in production, use Redis)
 active_sessions = {}
 
+# Zoho SMTP Configuration
+ZOHO_SMTP_HOST = os.environ.get('ZOHO_SMTP_HOST', 'smtp.zoho.in')
+ZOHO_SMTP_PORT = int(os.environ.get('ZOHO_SMTP_PORT', '465'))
+ZOHO_EMAIL = os.environ.get('ZOHO_EMAIL', '')
+ZOHO_PASSWORD = os.environ.get('ZOHO_PASSWORD', '')
+RECIPIENT_EMAIL = os.environ.get('RECIPIENT_EMAIL', 'info@advaithainfra.com')
+
 # ==================== #
 # Models
 # ==================== #
+class MediaItem(BaseModel):
+    url: str
+    type: str = "image"  # "image" or "video"
+    caption: Optional[str] = None
+
 class ProjectBase(BaseModel):
     title: str
     description: str
     category: str
     sub_category: str
     location: str
-    image_url: str
+    image_url: str  # Main/thumbnail image
+    gallery: List[dict] = []  # Array of {url, type, caption}
     features: List[str] = []
     highlights: dict = {}
     is_featured: bool = False
@@ -66,6 +87,7 @@ class ProjectUpdate(BaseModel):
     sub_category: Optional[str] = None
     location: Optional[str] = None
     image_url: Optional[str] = None
+    gallery: Optional[List[dict]] = None
     features: Optional[List[str]] = None
     highlights: Optional[dict] = None
     is_featured: Optional[bool] = None
@@ -95,6 +117,14 @@ class AdminLogin(BaseModel):
     username: str
     password: str
 
+class EnquiryRequest(BaseModel):
+    name: str
+    phone: str
+    email: Optional[str] = None
+    project: Optional[str] = None
+    message: Optional[str] = None
+    form_type: Optional[str] = "general"  # general, project, investment
+
 # ==================== #
 # Auth Functions
 # ==================== #
@@ -113,6 +143,108 @@ def create_session(username: str):
         'created': datetime.now(timezone.utc).timestamp()
     }
     return token
+
+# ==================== #
+# Email Functions
+# ==================== #
+def send_email_sync(to_email: str, subject: str, html_content: str):
+    """Synchronous email sending using Zoho SMTP"""
+    if not ZOHO_EMAIL or not ZOHO_PASSWORD:
+        logger.error("Zoho SMTP credentials not configured")
+        raise Exception("Email service not configured")
+    
+    msg = MIMEMultipart('alternative')
+    msg['Subject'] = Header(subject, 'utf-8')
+    msg['From'] = formataddr((str(Header("Advaithaa Infra", 'utf-8')), ZOHO_EMAIL))
+    msg['To'] = to_email
+    
+    # Attach HTML content
+    html_part = MIMEText(html_content, 'html', 'utf-8')
+    msg.attach(html_part)
+    
+    # Connect and send via SSL
+    server = smtplib.SMTP_SSL(ZOHO_SMTP_HOST, ZOHO_SMTP_PORT)
+    server.login(ZOHO_EMAIL, ZOHO_PASSWORD)
+    server.sendmail(ZOHO_EMAIL, [to_email], msg.as_string())
+    server.quit()
+    
+    logger.info(f"Email sent successfully to {to_email}")
+
+async def send_email_async(to_email: str, subject: str, html_content: str):
+    """Non-blocking email sending"""
+    await asyncio.to_thread(send_email_sync, to_email, subject, html_content)
+
+def create_enquiry_email_html(enquiry: EnquiryRequest) -> str:
+    """Create HTML email template for enquiry"""
+    form_type_label = {
+        "general": "General Enquiry",
+        "project": "Project Enquiry",
+        "investment": "Investment/JV Enquiry"
+    }.get(enquiry.form_type, "Website Enquiry")
+    
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    </head>
+    <body style="margin:0;padding:0;font-family:Arial,sans-serif;background-color:#f5f5f5;">
+        <table width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;margin:0 auto;background-color:#ffffff;">
+            <tr>
+                <td style="background-color:#0A0A0A;padding:24px;text-align:center;">
+                    <h1 style="color:#ECC16A;margin:0;font-size:24px;">Advaithaa Infra</h1>
+                </td>
+            </tr>
+            <tr>
+                <td style="padding:32px;">
+                    <h2 style="color:#0A0A0A;margin:0 0 24px 0;font-size:20px;border-bottom:2px solid #ECC16A;padding-bottom:12px;">
+                        New {form_type_label}
+                    </h2>
+                    <table width="100%" cellpadding="8" cellspacing="0" style="font-size:14px;">
+                        <tr>
+                            <td style="color:#666;width:120px;vertical-align:top;"><strong>Name:</strong></td>
+                            <td style="color:#0A0A0A;">{enquiry.name}</td>
+                        </tr>
+                        <tr>
+                            <td style="color:#666;vertical-align:top;"><strong>Phone:</strong></td>
+                            <td style="color:#0A0A0A;">
+                                <a href="tel:{enquiry.phone}" style="color:#0A0A0A;text-decoration:none;">{enquiry.phone}</a>
+                            </td>
+                        </tr>
+                        <tr>
+                            <td style="color:#666;vertical-align:top;"><strong>Email:</strong></td>
+                            <td style="color:#0A0A0A;">
+                                <a href="mailto:{enquiry.email or 'Not provided'}" style="color:#0A0A0A;text-decoration:none;">{enquiry.email or 'Not provided'}</a>
+                            </td>
+                        </tr>
+                        <tr>
+                            <td style="color:#666;vertical-align:top;"><strong>Project Interest:</strong></td>
+                            <td style="color:#0A0A0A;">{enquiry.project or 'General Enquiry'}</td>
+                        </tr>
+                        <tr>
+                            <td style="color:#666;vertical-align:top;"><strong>Message:</strong></td>
+                            <td style="color:#0A0A0A;">{enquiry.message or 'No message provided'}</td>
+                        </tr>
+                    </table>
+                    <div style="margin-top:24px;padding:16px;background-color:#f8f8f8;border-left:4px solid #ECC16A;">
+                        <p style="margin:0;font-size:12px;color:#666;">
+                            <strong>Submitted:</strong> {datetime.now(timezone.utc).strftime('%B %d, %Y at %I:%M %p UTC')}
+                        </p>
+                    </div>
+                </td>
+            </tr>
+            <tr>
+                <td style="background-color:#0A0A0A;padding:16px;text-align:center;">
+                    <p style="color:#666;margin:0;font-size:12px;">
+                        This enquiry was submitted from the Advaithaa Infra website.
+                    </p>
+                </td>
+            </tr>
+        </table>
+    </body>
+    </html>
+    """
 
 # ==================== #
 # Admin Auth Routes
@@ -135,6 +267,51 @@ async def verify_session(token: str):
     if verify_token(token):
         return {"valid": True}
     raise HTTPException(status_code=401, detail="Invalid or expired session")
+
+# ==================== #
+# Enquiry Routes (Public)
+# ==================== #
+@api_router.post("/enquiry")
+async def submit_enquiry(enquiry: EnquiryRequest, background_tasks: BackgroundTasks):
+    """Submit an enquiry form and send email notification"""
+    try:
+        # Store enquiry in database
+        enquiry_doc = {
+            "id": str(uuid.uuid4())[:8],
+            "name": enquiry.name,
+            "phone": enquiry.phone,
+            "email": enquiry.email,
+            "project": enquiry.project,
+            "message": enquiry.message,
+            "form_type": enquiry.form_type,
+            "status": "new",
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }
+        await db.enquiries.insert_one(enquiry_doc)
+        
+        # Send email notification in background
+        form_type_label = {
+            "general": "General Enquiry",
+            "project": "Project Enquiry", 
+            "investment": "Investment/JV Enquiry"
+        }.get(enquiry.form_type, "Website Enquiry")
+        
+        subject = f"New {form_type_label} from {enquiry.name}"
+        html_content = create_enquiry_email_html(enquiry)
+        
+        background_tasks.add_task(send_email_async, RECIPIENT_EMAIL, subject, html_content)
+        
+        return {
+            "success": True,
+            "message": "Enquiry submitted successfully. We will contact you soon!"
+        }
+    except Exception as e:
+        logger.error(f"Error submitting enquiry: {str(e)}")
+        # Still return success if email fails - enquiry is saved
+        return {
+            "success": True,
+            "message": "Enquiry submitted. We will contact you soon!"
+        }
 
 # ==================== #
 # Project Routes (Public)
@@ -274,8 +451,10 @@ async def upload_image(file: UploadFile = File(...), token: str = ""):
     if not verify_token(token):
         raise HTTPException(status_code=401, detail="Unauthorized")
     
-    if not file.content_type.startswith('image/'):
-        raise HTTPException(status_code=400, detail="File must be an image")
+    # Allow images and videos
+    allowed_types = ['image/', 'video/']
+    if not any(file.content_type.startswith(t) for t in allowed_types):
+        raise HTTPException(status_code=400, detail="File must be an image or video")
     
     file_extension = file.filename.split('.')[-1] if '.' in file.filename else 'jpg'
     file_id = str(uuid.uuid4())[:12]
@@ -286,7 +465,11 @@ async def upload_image(file: UploadFile = File(...), token: str = ""):
     with open(file_path, "wb") as f:
         f.write(content)
     
-    return {"success": True, "url": f"/api/uploads/{filename}", "filename": filename}
+    # Determine media type
+    media_type = 'video' if file.content_type.startswith('video/') else 'image'
+    
+    # Return URL pointing to frontend static folder
+    return {"success": True, "url": f"/uploads/{filename}", "filename": filename, "type": media_type}
 
 # Serve uploaded files
 from fastapi.responses import FileResponse
