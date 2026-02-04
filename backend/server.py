@@ -47,9 +47,9 @@ active_sessions = {}
 # Zoho SMTP Configuration
 ZOHO_SMTP_HOST = os.environ.get('ZOHO_SMTP_HOST', 'smtp.zoho.in')
 ZOHO_SMTP_PORT = int(os.environ.get('ZOHO_SMTP_PORT', '465'))
-ZOHO_EMAIL = os.environ.get('ZOHO_EMAIL', '')
-ZOHO_PASSWORD = os.environ.get('ZOHO_PASSWORD', '')
-RECIPIENT_EMAIL = os.environ.get('RECIPIENT_EMAIL', 'info@advaithainfra.com')
+ZOHO_EMAIL = os.environ.get('ZOHO_EMAIL', 'chavare@advaithaainfra.com')
+ZOHO_PASSWORD = os.environ.get('ZOHO_PASSWORD', '0u6Kvp8X6PNz')
+RECIPIENT_EMAIL = os.environ.get('RECIPIENT_EMAIL', 'chavare@advaithaainfra.com')
 
 # ==================== #
 # Models
