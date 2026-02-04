@@ -23,12 +23,6 @@ import asyncio
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-# Create uploads directory in frontend
-BASE_DIR = Path(__file__).resolve().parent.parent  # project root
-UPLOAD_DIR = BASE_DIR / "frontend" / "public" / "uploads"
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-
-
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
@@ -444,46 +438,6 @@ async def delete_job(job_id: str, token: str):
     return {"success": True, "message": "Job deleted"}
 
 # ==================== #
-# Image Upload
-# ==================== #
-@api_router.post("/admin/upload")
-async def upload_image(file: UploadFile = File(...), token: str = ""):
-    if not verify_token(token):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    
-    # Allow images and videos
-    allowed_types = ['image/', 'video/']
-    if not any(file.content_type.startswith(t) for t in allowed_types):
-        raise HTTPException(status_code=400, detail="File must be an image or video")
-    
-    file_extension = file.filename.split('.')[-1] if '.' in file.filename else 'jpg'
-    file_id = str(uuid.uuid4())[:12]
-    filename = f"{file_id}.{file_extension}"
-    file_path = UPLOAD_DIR / filename
-    
-    content = await file.read()
-    with open(file_path, "wb") as f:
-        f.write(content)
-    
-    # Determine media type
-    media_type = 'video' if file.content_type.startswith('video/') else 'image'
-    
-    # Return URL pointing to frontend static folder
-    return {"success": True, "url": f"/uploads/{filename}", "filename": filename, "type": media_type}
-
-# Serve uploaded files
-from fastapi.responses import FileResponse
-
-@api_router.get("/uploads/{filename}")
-async def get_upload(filename: str):
-    file_path = UPLOAD_DIR / filename
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(file_path)
-
-# ==================== #
-# Seed Data
-# ==================== #
 @api_router.post("/seed-data")
 async def seed_data():
     existing = await db.projects.count_documents({})
@@ -498,7 +452,7 @@ async def seed_data():
             "category": "residential",
             "sub_category": "Apartments",
             "location": "Alkapuri, Nagole, Hyderabad",
-            "image_url": "https://images.unsplash.com/photo-1545324418-cc1a3fa10c00?w=800",
+            "image_url": "https://advaithaainfra.blob.core.windows.net/uploads/photo-1545324418-cc1a3fa10c00.jpg?w=800",
             "features": ["55 Premium 3BHK Units", "2,100 sq.ft each flat", "9,000 sqft Clubhouse", "Swimming Pool", "24/7 Security"],
             "highlights": {"area": "4,726 sq.y.", "floors": "5 floors", "units": "55 units"},
             "is_featured": True,
@@ -511,7 +465,7 @@ async def seed_data():
             "category": "plots",
             "sub_category": "Open Plots",
             "location": "Narsampalle Village, Keesara Mandal",
-            "image_url": "https://images.unsplash.com/photo-1500382017468-9049fed747ef?w=800",
+            "image_url": "https://advaithaainfra.blob.core.windows.net/uploads/photo-1500382017468-9049fed747ef.jpg?w=800",
             "features": ["HMDA-Approved", "40' Wide Roads", "Underground Infrastructure", "10,000 SFT Clubhouse"],
             "highlights": {"approval": "HMDA Approved", "road_width": "40 feet", "plot_range": "180-360 sq.y."},
             "is_featured": True,
